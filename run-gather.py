@@ -3,6 +3,7 @@ import sys
 import argparse
 import os
 import time
+import csv
 
 import sourmash_plugin_branchwater as branch
 
@@ -68,9 +69,21 @@ class Database:
         end = time.time()
         print(f"...done! took {end - start:.1f}s")
 
+    def get_subdb_names(self, gather_rows):
+        names = set()
+        for row in gather_rows:
+            match_name = row['match_name']
+            if match_name in self.subdb_dict:
+                names.add((match_name, self.subdb_dict[match_name]))
+
+        return names
+
+###
+
 databases = [Database(shortname='all',
                       path='../chill-filter/prepare-db/plants+animals+gtdb.rocksdb',
-                      dbtype='rocksdb'),
+                      dbtype='rocksdb',
+                      subdb_dict = { 'bacteria and archaea (GTDB rs220)': 'podar-ref' }),
              Database(shortname='podar-ref',
                       path='../sourmash/podar-ref.zip',
                       dbtype='collection'),
@@ -83,6 +96,22 @@ def get_db(shortname):
             return db
 
     raise Exception(f"database '{shortname}' not found")
+
+
+def load_gather_csv(csvfile):
+    with open(csvfile, newline='') as fp:
+        r = csv.DictReader(fp)
+        rows = list(r)
+
+    return rows
+
+def replace_row(gather_rows, match_name, new_gather_rows):
+    rows = []
+    for row in gather_rows:
+        if row['match_name'] != match_name:
+            rows.append(row)
+
+    rows.extend(new_gather_rows)
 
 
 def main():
@@ -109,6 +138,26 @@ def main():
     outfile = f'{prefix}.gather.csv'
     against_db.gather(query_obj, 0, scaled, outfile)
     assert os.path.exists(outfile)
+
+    gather_rows = load_gather_csv(outfile)
+
+    subdb_names = against_db.get_subdb_names(gather_rows)
+    while subdb_names:
+        (match_name, dbname) = subdb_names.pop()
+        db = get_db(dbname)
+        db.load(ksize, scaled, moltype)
+
+        # run gather against database
+        outfile = f'{prefix}.x.{dbname}.gather.csv'
+        print('running gather:', outfile)
+        db.gather(query_obj, 0, scaled, outfile)
+        new_gather_rows = load_gather_csv(outfile)
+
+        # update with new databases to search
+        subdb_names.update(db.get_subdb_names(new_gather_rows))
+
+        # update gather output with new results
+        gather_rows = replace_row(gather_rows, match_name, new_gather_rows)
 
 
 if __name__ == '__main__':
